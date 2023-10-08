@@ -3,6 +3,8 @@
 import sys
 import os
 
+from scipy.spatial.transform import Rotation as R
+
 import rclpy
 from rclpy.node import Node
 
@@ -11,6 +13,8 @@ from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+
+from geometry_msgs.msg import Pose, Point, Quaternion, PoseStamped
 
 import message_filters
 
@@ -38,8 +42,18 @@ class ImageServer(Node):
         self.distortionCoeffRight = None
         self.intrisicsMatrixRight = None
 
+        self.keypointsLeftAccumulated = []
+        self.descriptorLeftAccumulated = []
+        self.imagesLeft = []
+
+        self.tAccumulated = Point()
+        self.rotAccumulated = R.from_matrix(np.matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])).as_quat()
+
         self.pointCloudPublisher = self.create_publisher(PointCloud2, "/points", 2)
         self.densePointCloudPublisher = self.create_publisher(PointCloud2, "/points_dense", 2)
+
+        self.cameraPoseLeft = self.create_publisher(PoseStamped, "/pose_camera_left", 2)
+        self.cameraPoseRight = self.create_publisher(PoseStamped, "/pose_camera_right", 2)
 
         self.leftCameraInfoSubscriber = self.create_subscription(CameraInfo, '/left/camera_info', self.projectionMatrixLeftCallback, 1)
         self.rightCameraInfoSubscriber = self.create_subscription(CameraInfo, '/right/camera_info', self.projectionMatrixRightCallback, 1)
@@ -81,8 +95,15 @@ class ImageServer(Node):
             cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftLeft.jpg'), frameSiftLeft)
             cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftRight.jpg'), frameSiftRight)
 
-        goodMatches = self.featureMatching(frameSiftLeft, keypointsLeft, descriptorLeft, frameSiftRight,
-                                           keypointsRight, descriptorRight)
+        goodMatches = self.featureMatching(descriptorLeft, descriptorRight)
+
+        if DEBUG:
+            matchesImage = cv2.drawMatchesKnn(leftImage, keypointsLeft, rightImage, keypointsRight, goodMatches,
+                                              None,
+                                              matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
+                                              flags=0)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImage.jpg'), matchesImage)
+
         normalizedPoints = self.triangulation(keypointsLeft, keypointsRight, goodMatches)
 
         pointsLeft = np.float32([keypointsLeft[m.queryIdx].pt for (m, _) in goodMatches]).reshape(-1, 1, 2)
@@ -97,6 +118,8 @@ class ImageServer(Node):
 
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
+        self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
+
     def extractSift(self, currentFrame):
         sift = cv2.SIFT_create()
         keyPoints, descriptors = sift.detectAndCompute(currentFrame, None)
@@ -105,7 +128,7 @@ class ImageServer(Node):
                                       flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
         return frameSift, keyPoints, descriptors
         
-    def featureMatching(self, frameCvLeft, keypointsLeft, descriptorLeft, frameCvRight, keypointsRight, descriptorRight):
+    def featureMatching(self, descriptorLeft, descriptorRight):
         matches = self.bfMatcher.knnMatch(descriptorLeft, descriptorRight, k=2)
 
         ratioThreshold = 0.99
@@ -114,12 +137,6 @@ class ImageServer(Node):
             m, n = match
             if m.distance < ratioThreshold * n.distance:
                 goodMatches.append(match)
-
-        if DEBUG:
-            matchesImage = cv2.drawMatchesKnn(frameCvLeft, keypointsLeft, frameCvRight, keypointsRight, goodMatches, None,
-                                              matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
-                                              flags=0)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImage.jpg'), matchesImage)
 
         return goodMatches
 
@@ -133,7 +150,10 @@ class ImageServer(Node):
         triangulatedPoints /= triangulatedPoints[3]
         normalizedPoints = triangulatedPoints.T[:,:3]
 
-        cloud = pc2.create_cloud_xyz32(Header(), normalizedPoints)
+        pointCloudHeader = Header()
+        pointCloudHeader.frame_id = "map"
+
+        cloud = pc2.create_cloud_xyz32(pointCloudHeader, normalizedPoints)
 
         self.pointCloudPublisher.publish(cloud)
 
@@ -149,9 +169,63 @@ class ImageServer(Node):
                                                 self.intrisicsMatrixRight, self.distortionCoeffRight, imageSize, R, T)
         spacialRepresentation = cv2.reprojectImageTo3D(disparityMap, Q)
 
-        denseCloud = pc2.create_cloud_xyz32(Header(), spacialRepresentation)
+        densePointCloudHeader = Header()
+        densePointCloudHeader.frame_id = "map"
+
+        denseCloud = pc2.create_cloud_xyz32(densePointCloudHeader, spacialRepresentation)
         self.densePointCloudPublisher.publish(denseCloud)
 
+    def monocularPose(self, essentialMatrix, imageLeftNew, descriptorLeftNew, keypointsLeftNew):
+        if not self.keypointsLeftAccumulated:
+            self.imagesLeft.append(imageLeftNew)
+            self.descriptorLeftAccumulated.append(descriptorLeftNew)
+            self.keypointsLeftAccumulated.append(keypointsLeftNew)
+            return
+
+        self.get_logger().info('Publishing 3D reconstruction')
+
+        keypointsLeftOld = self.keypointsLeftAccumulated[-1]
+        descriptorLeftOld = self.descriptorLeftAccumulated[-1]
+
+        goodMatchesTemporal = self.featureMatching(descriptorLeftOld, descriptorLeftNew)
+        goodPointsOld = np.float32([keypointsLeftOld[m.queryIdx].pt for (m, _) in goodMatchesTemporal]).reshape(-1, 1, 2)
+        goodPointsNew = np.float32([keypointsLeftNew[m.trainIdx].pt for (m, _) in goodMatchesTemporal]).reshape(-1, 1, 2)
+
+        _, rotLeft, tLeft, mask = cv2.recoverPose(essentialMatrix, goodPointsOld, goodPointsNew, self.intrisicsMatrixLeft)
+
+        if DEBUG:
+            imageLeftOld = self.imagesLeft[-1]
+
+            matchesImageTemporal = cv2.drawMatchesKnn(imageLeftOld, keypointsLeftOld, imageLeftNew, keypointsLeftNew, goodMatchesTemporal,
+                                              None,
+                                              matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
+                                              flags=0)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImageTemporal.jpg'), matchesImageTemporal)
+
+            self.imagesLeft.append(imageLeftNew)
+
+        self.descriptorLeftAccumulated.append(descriptorLeftNew)
+        self.keypointsLeftAccumulated.append(keypointsLeftNew)
+
+        self.tAccumulated.x += float(tLeft[0]) * TARA_DISTANCE
+        self.tAccumulated.y += float(tLeft[1]) * TARA_DISTANCE
+        self.tAccumulated.z += float(tLeft[2]) * TARA_DISTANCE
+
+        self.rotAccumulated *= R.from_matrix(rotLeft).as_quat()
+
+        leftPose = PoseStamped()
+        leftPose.header = Header()
+        leftPose.header.frame_id = "map"
+        leftPose.pose = Pose()
+        leftPose.pose.position = self.tAccumulated
+        leftPose.pose.orientation = Quaternion()
+        leftPose.pose.orientation.x = self.rotAccumulated[0]
+        leftPose.pose.orientation.y = self.rotAccumulated[1]
+        leftPose.pose.orientation.z = self.rotAccumulated[2]
+        leftPose.pose.orientation.w = self.rotAccumulated[3]
+        self.cameraPoseLeft.publish(leftPose)
+
+        self.get_logger().info('New position: ' + str(self.tAccumulated))
 
 
 def main(args=sys.argv):
