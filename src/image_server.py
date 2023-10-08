@@ -2,21 +2,21 @@
 
 import sys
 import os
+
 import rclpy
 from rclpy.node import Node
-from visualization_msgs.msg import MarkerArray
-from visualization_msgs.msg import Marker
-from sensor_msgs.msg import LaserScan
-import laser_geometry.laser_geometry as lg
+
+from std_msgs.msg import Header
+
 import sensor_msgs_py.point_cloud2 as pc2
-from itertools import groupby
-from operator import itemgetter
+
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+
 import message_filters
 
-from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-import cv2 
-from matplotlib import pyplot as plt
+
+import cv2
 
 import numpy as np
 
@@ -29,79 +29,92 @@ class ImageServer(Node):
         self.bridge = CvBridge()
         self.bfMatcher = cv2.BFMatcher()
         self.stereo = cv2.StereoBM_create(numDisparities = 16, blockSize = 15)
-        self.projectionMatrixLeft = [0,0,0] #Supongo que de la calibracion viene esto nvm
-        self.projectionMatrixRight = [0,0,0]
+        self.projectionMatrixLeft = None
+        self.projectionMatrixRight = None
 
-        self.syncImages()
+        self.pointCloudPoints = self.create_publisher(PointCloud2, "/points", 2)
 
-    def syncImages(self):
-        left_rect = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/left/image_rect"))
-        right_rect = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/right/image_rect"))
-        ts = message_filters.TimeSynchronizer([left_rect, right_rect], 10)
-        ts.registerCallback(self.callback)
+        self.leftCameraInfoSubscriber = self.create_subscription(CameraInfo, '/left/camera_info', self.projectionMatrixLeftCallback, 1)
+        self.rightCameraInfoSubscriber = self.create_subscription(CameraInfo, '/right/camera_info', self.projectionMatrixRightCallback, 1)
 
-    def callback(self, left_msg, right_msg):
+        self.leftRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/left/image_rect"))
+        self.rightRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/right/image_rect"))
+        timeSync = message_filters.TimeSynchronizer([self.leftRectSubscriber, self.rightRectSubscriber], 10)
+        timeSync.registerCallback(self.callback)
+
+    def projectionMatrixLeftCallback(self, message: CameraInfo):
+        self.get_logger().info('Receiving left camera info')
+        self.projectionMatrixLeft = message.p.reshape((3, 4))
+
+    def projectionMatrixRightCallback(self, message: CameraInfo):
+        self.get_logger().info('Receiving right camera info')
+        self.projectionMatrixRight = message.p.reshape((3, 4))
+
+    def callback(self, leftMessage, rightMessage):
+        if self.projectionMatrixLeft is None or self.projectionMatrixRight is None:
+            return
+
         self.get_logger().info('Receiving synced video frame')
 
-        frameSiftLeft, keypointsLeft, descriptorLeft = self.extract_SIFT(left_msg)
-        cv2.imwrite(os.path.join(RESULT_PATH, 'current_frame_left_sift.jpg'), frameSiftLeft)
+        leftImage = self.bridge.imgmsg_to_cv2(leftMessage)
+        rightImage = self.bridge.imgmsg_to_cv2(rightMessage)
 
-        frameSiftRight, keypointsRight, descriptorRight = self.extract_SIFT(right_msg)
-        cv2.imwrite(os.path.join(RESULT_PATH, 'current_frame_right_sift.jpg'), frameSiftRight)
+        cv2.imwrite(os.path.join(RESULT_PATH, 'leftImage.jpg'), leftImage)
+        cv2.imwrite(os.path.join(RESULT_PATH, 'rightImage.jpg'), rightImage)
+
+        frameSiftLeft, keypointsLeft, descriptorLeft = self.extractSift(leftImage)
+        frameSiftRight, keypointsRight, descriptorRight = self.extractSift(rightImage)
+
+        cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftLeft.jpg'), frameSiftLeft)
+        cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftRight.jpg'), frameSiftRight)
 
         good_matches = self.feature_matching(frameSiftLeft, keypointsLeft, descriptorLeft, frameSiftRight,
                                              keypointsRight, descriptorRight)
         normalizedPoints = self.triangulation(keypointsLeft, keypointsRight, good_matches)
-        esencialMatrix = self.findHomograficaOEsencial(keypointsLeft, keypointsRight, good_matches)
-        currentFrameLeft = self.bridge.imgmsg_to_cv2(left_msg)
-        currentFrameRight = self.bridge.imgmsg_to_cv2(right_msg)
-        disparityMap = self.stereoMatchesDisparity(currentFrameLeft, currentFrameRight)
 
-    def extract_SIFT(self, frame_msg):
-        currentFrame = self.bridge.imgmsg_to_cv2(frame_msg)
-        cv2.imwrite(os.path.join(RESULT_PATH, 'sift_frame.jpg'), currentFrame)
-         
+        pointsLeft = np.float32([keypointsLeft[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        pointsRight = np.float32([keypointsRight[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+        esencialMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
+
+        disparityMap = self.stereo.compute(leftImage, rightImage)
+        cv2.imwrite(os.path.join(RESULT_PATH, 'disparity.jpg'), disparityMap)
+
+    def extractSift(self, currentFrame):
         sift = cv2.SIFT_create()
         keyPoints, descriptors = sift.detectAndCompute(currentFrame, None)
          
-        frame_sift=cv2.drawKeypoints(currentFrame, keyPoints, currentFrame, 
-                                     flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        return frame_sift, keyPoints, descriptors
+        frameSift = cv2.drawKeypoints(currentFrame, keyPoints, currentFrame,
+                                      flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        return frameSift, keyPoints, descriptors
         
     def feature_matching(self, frameCvLeft, keypointsLeft, descriptorLeft, frameCvRight, keypointsRight, descriptorRight):
         matches = self.bfMatcher.knnMatch(descriptorLeft, descriptorRight, k=2)
-        matches_image = cv2.drawMatchesKnn(frameCvLeft, keypointsLeft, frameCvRight, keypointsRight, matches, None,
+        matchesImage = cv2.drawMatchesKnn(frameCvLeft, keypointsLeft, frameCvRight, keypointsRight, matches, None,
                                            matchColor=(255,0,0), matchesMask=None, singlePointColor=(0,255,0), flags=0)
-        cv2.imwrite(os.path.join(RESULT_PATH, 'matches.jpg'), matches_image)
+        cv2.imwrite(os.path.join(RESULT_PATH, 'matches.jpg'), matchesImage)
         
-        ratio_thresh = 0.9
-        good_matches = []
+        ratioThreshold = 0.9
+        goodMatches = []
         for m,n in matches:
-            if m.distance < ratio_thresh * n.distance:
-                good_matches.append(m)
-        return good_matches
+            if m.distance < ratioThreshold * n.distance:
+                goodMatches.append(m)
+        return goodMatches
     
     def triangulation(self, keypointsLeft, keypointsRight, matches):
         pointsLeft = np.float32([keypointsLeft[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
         pointsRight = np.float32([keypointsRight[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
         
         triangulatedPoints = cv2.triangulatePoints(self.projectionMatrixLeft, self.projectionMatrixRight, pointsLeft, pointsRight)
-        # TODO Messu publica pts como un PointCLoud2 asi va a RVIZ2
         triangulatedPoints /= triangulatedPoints[3]
         normalizedPoints = triangulatedPoints.T[:,:3]
+
+        cloud = pc2.create_cloud_xyz32(Header(), normalizedPoints)
+
+        self.pointCloudPoints.publish(cloud)
+
         return normalizedPoints
-        
-    def findHomograficaOEsencial(self, kpntL,kpntR, matches):
-        pointsLeft = np.float32([kpntL[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-        pointsRight = np.float32([kpntR[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
-        
-        esencial, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold = 2.0)
-        return esencial
-        
-    def stereoMatchesDisparity(self, frameL, frameR):
-        disparity = self.stereo.compute(frameL,frameR)
-        cv2.imwrite(os.path.join(RESULT_PATH, 'gray.jpg'), disparity)
-        return disparity
+
 
 def main(args=sys.argv):
     rclpy.init(args=args)
