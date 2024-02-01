@@ -24,7 +24,10 @@ import cv2
 
 import numpy as np
 
+import yaml
+
 RESULT_PATH = "/catkin_ws/src/result/"
+CAMERA_CALIBRATION_DATA_PATH = "/catkin_ws/calibrationdata/"
 TARA_DISTANCE = 0.060
 DEBUG = True
 
@@ -48,6 +51,10 @@ class ImageServer(Node):
 
         self.tAccumulated = Point()
         self.rotAccumulated = R.from_matrix(np.matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])).as_quat()
+        
+        # Calibration Data. Ex 4
+        self.projectionMatrixLeft, self.intrisicsMatrixLeft, self.distortionCoeffLeft = self.extractCal(CAMERA_CALIBRATION_DATA_PATH+"left.yaml")
+        self.projectionMatrixRight, self.intrisicsMatrixRight, self.distortionCoeffRight = self.extractCal(CAMERA_CALIBRATION_DATA_PATH+"right.yaml")
 
         self.pointCloudPublisher = self.create_publisher(PointCloud2, "/points", 2)
         self.densePointCloudPublisher = self.create_publisher(PointCloud2, "/points_dense", 2)
@@ -55,25 +62,10 @@ class ImageServer(Node):
         self.cameraPoseLeft = self.create_publisher(PoseStamped, "/pose_camera_left", 2)
         self.cameraPoseRight = self.create_publisher(PoseStamped, "/pose_camera_right", 2)
 
-        self.leftCameraInfoSubscriber = self.create_subscription(CameraInfo, '/left/camera_info', self.projectionMatrixLeftCallback, 1)
-        self.rightCameraInfoSubscriber = self.create_subscription(CameraInfo, '/right/camera_info', self.projectionMatrixRightCallback, 1)
-
         self.leftRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/left/image_rect"))
         self.rightRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/right/image_rect"))
         timeSync = message_filters.TimeSynchronizer([self.leftRectSubscriber, self.rightRectSubscriber], 10)
         timeSync.registerCallback(self.callback)
-
-    def projectionMatrixLeftCallback(self, message: CameraInfo):
-        self.get_logger().info('Receiving left camera info')
-        self.projectionMatrixLeft = message.p.reshape((3, 4))
-        self.intrisicsMatrixLeft = message.k.reshape((3, 3))
-        self.distortionCoeffLeft = np.array(message.d)
-
-    def projectionMatrixRightCallback(self, message: CameraInfo):
-        self.get_logger().info('Receiving right camera info')
-        self.projectionMatrixRight = message.p.reshape((3, 4))
-        self.intrisicsMatrixRight = message.k.reshape((3, 3))
-        self.distortionCoeffRight = np.array(message.d)
 
     def callback(self, leftMessage, rightMessage):
         if self.projectionMatrixLeft is None or self.projectionMatrixRight is None:
@@ -119,6 +111,30 @@ class ImageServer(Node):
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
         self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
+
+
+    def extractCal(self, cal_camera_file):
+        with open(cal_camera_file, 'r') as stream:
+            cal_camera_data = yaml.safe_load(stream)
+        
+        camera_name = cal_camera_data['camera_name']
+        self.get_logger().info('Extracting data cal. of ' + str(camera_name))
+        
+        proj_matrix_raw = np.array(cal_camera_data['projection_matrix']['data'])
+        proj_matrix = proj_matrix_raw.reshape(cal_camera_data['projection_matrix']['rows'],
+                                              cal_camera_data['projection_matrix']['cols'])
+        self.get_logger().info('Projection Matrix extracted')
+        
+        camera_matrix_raw = np.array(cal_camera_data['camera_matrix']['data'])
+        camera_matrix = camera_matrix_raw.reshape(cal_camera_data['camera_matrix']['rows'],
+                                                  cal_camera_data['camera_matrix']['cols'])
+        self.get_logger().info('Intrinsic Matrix extracted')
+
+        dist_coeff = np.array(cal_camera_data['distortion_coefficients']['data'])
+        self.get_logger().info('Distortion Coeff. extracted')
+                
+        return proj_matrix, camera_matrix, dist_coeff
+
 
     def extractSift(self, currentFrame):
         sift = cv2.SIFT_create()
