@@ -90,11 +90,10 @@ class ImageServer(Node):
 
         if DEBUG:
             # Saving the keypoints
-            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftLeft' + str(self.image_index) + '.jpg'), frameSiftLeft)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftRight' + str(self.image_index) + '.jpg'), frameSiftRight)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints', 'frameSiftLeft' + str(self.image_index) + '.jpg'), frameSiftLeft)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints', 'frameSiftRight' + str(self.image_index) + '.jpg'), frameSiftRight)
 
         # Compute matches between both images. Ex 8
-        # TO DO: Try to put all pair of images into a isolated folder
         # TO DO: Show the keypoints in a friendly way 
         goodMatches = self.featureMatching(descriptorLeft, descriptorRight)
 
