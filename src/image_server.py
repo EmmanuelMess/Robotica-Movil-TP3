@@ -35,6 +35,7 @@ class ImageServer(Node):
     
     def __init__(self):
         super().__init__('publish_cylinders_server')
+        self.image_index = 0
         self.bridge = CvBridge()
         self.bfMatcher = cv2.BFMatcher()
         self.stereo = cv2.StereoBM_create(numDisparities = 16, blockSize = 15)
@@ -62,6 +63,7 @@ class ImageServer(Node):
         self.cameraPoseLeft = self.create_publisher(PoseStamped, "/pose_camera_left", 2)
         self.cameraPoseRight = self.create_publisher(PoseStamped, "/pose_camera_right", 2)
 
+        # Synch of images and rectify. Ex 5 and Ex 6 
         self.leftRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/left/image_rect"))
         self.rightRectSubscriber = message_filters.Subscriber(self, Image, os.path.join(RESULT_PATH, "/right/image_rect"))
         timeSync = message_filters.TimeSynchronizer([self.leftRectSubscriber, self.rightRectSubscriber], 10)
@@ -73,20 +75,27 @@ class ImageServer(Node):
 
         self.get_logger().info('Receiving synced video frame')
 
+        # Transform image_msg to image, we're starting the matching process
         leftImage = self.bridge.imgmsg_to_cv2(leftMessage)
         rightImage = self.bridge.imgmsg_to_cv2(rightMessage)
 
         if DEBUG:
+            self.get_logger().info('Saving video frame of both cameras')
             cv2.imwrite(os.path.join(RESULT_PATH, 'leftImage.jpg'), leftImage)
             cv2.imwrite(os.path.join(RESULT_PATH, 'rightImage.jpg'), rightImage)
 
+        # Extract the keypoints and descriptors using SIFT. Ex 7
         frameSiftLeft, keypointsLeft, descriptorLeft = self.extractSift(leftImage)
         frameSiftRight, keypointsRight, descriptorRight = self.extractSift(rightImage)
 
         if DEBUG:
-            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftLeft.jpg'), frameSiftLeft)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftRight.jpg'), frameSiftRight)
+            # Saving the keypoints
+            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftLeft' + str(self.image_index) + '.jpg'), frameSiftLeft)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'frameSiftRight' + str(self.image_index) + '.jpg'), frameSiftRight)
 
+        # Compute matches between both images. Ex 8
+        # TO DO: Try to put all pair of images into a isolated folder
+        # TO DO: Show the keypoints in a friendly way 
         goodMatches = self.featureMatching(descriptorLeft, descriptorRight)
 
         if DEBUG:
@@ -111,6 +120,8 @@ class ImageServer(Node):
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
         self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
+        
+        self.image_index = self.image_index + 1
 
 
     def extractCal(self, cal_camera_file):
