@@ -89,12 +89,11 @@ class ImageServer(Node):
         frameSiftRight, keypointsRight, descriptorRight = self.extractSift(rightImage)
 
         if DEBUG:
-            # Saving the keypoints
-            cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints', 'frameSiftLeft' + str(self.image_index) + '.jpg'), frameSiftLeft)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints', 'frameSiftRight' + str(self.image_index) + '.jpg'), frameSiftRight)
-
+            # Saving the SIFT FRAMES and KPs
+            self.saveSIFTFrameAndDrawKeypoints(frameSiftLeft, leftImage, keypointsLeft, 'narrow_stereo_left')
+            self.saveSIFTFrameAndDrawKeypoints(frameSiftRight, rightImage, keypointsRight, 'narrow_stereo_right')
+            
         # Compute matches between both images. Ex 8
-        # TO DO: Show the keypoints in a friendly way 
         goodMatches = self.featureMatching(descriptorLeft, descriptorRight)
 
         if DEBUG:
@@ -121,6 +120,17 @@ class ImageServer(Node):
         self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
         
         self.image_index = self.image_index + 1
+
+
+    def saveSIFTFrameAndDrawKeypoints(self, siftFrame, image_raw, image_keypoint, camera_name):
+        # Save SIFT Frame
+        cv2.imwrite(os.path.join(RESULT_PATH, 'SIFT Frames', 'frameSift_'+ camera_name + '_id_' + str(self.image_index) + '.jpg'), siftFrame)
+        # Save Keypoints
+        frame_with_keypoint = cv2.cvtColor(image_raw, cv2.COLOR_GRAY2RGB)
+        for kp in image_keypoint:
+            kp_pos = (round(kp.pt[0]), round(kp.pt[1]))
+            frame_with_keypoint = cv2.circle(frame_with_keypoint, kp_pos, 3, (255, 0, 0))
+        cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints', 'framekp_'+ camera_name + '_id_' + str(self.image_index) + '.jpg'), frame_with_keypoint)
 
 
     def extractCal(self, cal_camera_file):
