@@ -14,6 +14,7 @@ services:
       ROS_MASTER_URI: http://rosmaster:11311
     volumes:
       - ./src:/catkin_ws/src
+      - ./calibrationdata:/catkin_ws/calibrationdata
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /tmp/.docker.xauth:/tmp/.docker.xauth
     ports:
