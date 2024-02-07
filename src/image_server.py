@@ -106,11 +106,8 @@ class ImageServer(Node):
                                               flags=0)
             cv2.imwrite(os.path.join(RESULT_PATH, 'matches','allMatches','matches_image' + str(self.image_index) + '.jpg'), matchesImage)
             
-            # Store all matches with distance less than 30 (euclidean distance idk if the descriptor is binary in this case we should use Hamming)
-            # TO DO: EMPTY LIST OF MATCHES, TRY TO SOLVE THIS
-            matchesFiltered = list(filter(lambda match: match[0].distance <= 30 and match[1].distance <= 30, goodMatches))
-            self.get_logger().info('EL LARGO DE LOS MATCHES DE MENOR A 30 ES: ' + str(len(matchesFiltered)))
-
+            # Store all matches with distance less than 30 
+            matchesFiltered = list(filter(lambda match: match[0].distance <= 30, goodMatches))
             matchesImageDistance = cv2.drawMatchesKnn(leftImage, keypointsLeft, rightImage, keypointsRight, matchesFiltered,
                                                       None,
                                                       matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
@@ -118,20 +115,22 @@ class ImageServer(Node):
             cv2.imwrite(os.path.join(RESULT_PATH, 'matches','matchesFilteredByDistance','matches_image' + str(self.image_index) + '.jpg'), matchesImageDistance)
 
         # Triangulation. Ex 9
-        normalizedPoints = self.triangulation(keypointsLeft, keypointsRight, goodMatches)
-
-        pointsLeft = np.float32([keypointsLeft[m.queryIdx].pt for (m, _) in goodMatches]).reshape(-1, 1, 2)
-        pointsRight = np.float32([keypointsRight[m.trainIdx].pt for (m, _) in goodMatches]).reshape(-1, 1, 2)
-
+        normalizedPoints, pointsLeft, pointsRight = self.triangulation(keypointsLeft, keypointsRight, goodMatches)
+        
+        # RANSAC. Ex 10
+        # Homography
         esencialMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
 
+        # DisparityMap. Ex 11
         disparityMap = self.stereo.compute(leftImage, rightImage)
 
         if DEBUG:
-            cv2.imwrite(os.path.join(RESULT_PATH, 'disparity.jpg'), disparityMap)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'disparityMaps', 'disparityMap' + str(self.image_index) + '.jpg'), disparityMap)
 
+        # Dense Reconstruction. Ex 12
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
+        # Pose estimation. Ex 13
         self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
         
         self.image_index = self.image_index + 1
@@ -208,7 +207,7 @@ class ImageServer(Node):
 
         self.pointCloudPublisher.publish(cloud)
 
-        return normalizedPoints
+        return normalizedPoints, pointsLeft, pointsRight
 
     def reconstruct3d(self, imageSize, disparityMap):
         R = np.array([0, 0, 0])
