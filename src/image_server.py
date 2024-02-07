@@ -24,6 +24,8 @@ import cv2
 
 import numpy as np
 
+import math
+
 import yaml
 
 RESULT_PATH = "/catkin_ws/src/result/"
@@ -97,12 +99,25 @@ class ImageServer(Node):
         goodMatches = self.featureMatching(descriptorLeft, descriptorRight)
 
         if DEBUG:
+            # Store all matches (good matches)
             matchesImage = cv2.drawMatchesKnn(leftImage, keypointsLeft, rightImage, keypointsRight, goodMatches,
                                               None,
                                               matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
                                               flags=0)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImage.jpg'), matchesImage)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'matches','allMatches','matches_image' + str(self.image_index) + '.jpg'), matchesImage)
+            
+            # Store all matches with distance less than 30 (euclidean distance idk if the descriptor is binary in this case we should use Hamming)
+            # TO DO: EMPTY LIST OF MATCHES, TRY TO SOLVE THIS
+            matchesFiltered = list(filter(lambda match: match[0].distance <= 30 and match[1].distance <= 30, goodMatches))
+            self.get_logger().info('EL LARGO DE LOS MATCHES DE MENOR A 30 ES: ' + str(len(matchesFiltered)))
 
+            matchesImageDistance = cv2.drawMatchesKnn(leftImage, keypointsLeft, rightImage, keypointsRight, matchesFiltered,
+                                                      None,
+                                                      matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
+                                                      flags=0)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'matches','matchesFilteredByDistance','matches_image' + str(self.image_index) + '.jpg'), matchesImageDistance)
+
+        # Triangulation. Ex 9
         normalizedPoints = self.triangulation(keypointsLeft, keypointsRight, goodMatches)
 
         pointsLeft = np.float32([keypointsLeft[m.queryIdx].pt for (m, _) in goodMatches]).reshape(-1, 1, 2)
