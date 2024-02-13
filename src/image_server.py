@@ -258,7 +258,7 @@ class ImageServer(Node):
                                               None,
                                               matchColor=(255, 0, 0), matchesMask=None, singlePointColor=(0, 255, 0),
                                               flags=0)
-            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImageTemporal.jpg'), matchesImageTemporal)
+            cv2.imwrite(os.path.join(RESULT_PATH, 'matchesImageTemporal' + '_id_' + str(self.image_index) + '.jpg'), matchesImageTemporal)
 
             self.imagesLeft.append(imageLeftNew)
 
