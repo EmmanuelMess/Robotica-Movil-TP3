@@ -30,6 +30,8 @@ import yaml
 
 import matplotlib.pyplot as plt
 
+import copy
+
 RESULT_PATH = "/catkin_ws/src/result/"
 CAMERA_CALIBRATION_DATA_PATH = "/catkin_ws/calibrationdata/"
 TARA_DISTANCE = 0.060
@@ -123,7 +125,12 @@ class ImageServer(Node):
         
         # RANSAC. Ex 10
         # Homography
-        homographyMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
+        homographyMatrix, maskHomography = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
+        ###
+        mask = maskHomography.ravel() == 1
+        pointsLeftMask = pointsLeft[mask]
+        pointsRightMask = pointsRight[mask]
+        ###
         self.transformLeftKPsInRightFrame(pointsLeft, homographyMatrix, rightImage)
 
         # DisparityMap. Ex 11
@@ -136,8 +143,8 @@ class ImageServer(Node):
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
         # Pose estimation. Ex 13
-        esencialMatrix, _ = cv2.findEssentialMat(points1=pointsLeft,
-                                                 points2=pointsRight,
+        esencialMatrix, _ = cv2.findEssentialMat(points1=pointsLeftMask,
+                                                 points2=pointsRightMask,
                                                  cameraMatrix1=self.intrisicsMatrixLeft,
                                                  distCoeffs1=self.distortionCoeffLeft,
                                                  cameraMatrix2=self.intrisicsMatrixRight,
@@ -278,7 +285,7 @@ class ImageServer(Node):
         self.tAccumulated.x += float(tLeft[0]) * TARA_DISTANCE
         self.tAccumulated.y += float(tLeft[1]) * TARA_DISTANCE
         self.tAccumulated.z += float(tLeft[2]) * TARA_DISTANCE
-        self.tAccumulatedList.append(self.tAccumulated)
+        self.tAccumulatedList.append(copy.deepcopy(self.tAccumulated))
 
         self.rotAccumulated *= R.from_matrix(rotLeft).as_quat()
 
