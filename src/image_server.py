@@ -28,6 +28,8 @@ import math
 
 import yaml
 
+import matplotlib.pyplot as plt
+
 RESULT_PATH = "/catkin_ws/src/result/"
 CAMERA_CALIBRATION_DATA_PATH = "/catkin_ws/calibrationdata/"
 TARA_DISTANCE = 0.060
@@ -47,6 +49,7 @@ class ImageServer(Node):
         self.projectionMatrixRight = None
         self.distortionCoeffRight = None
         self.intrisicsMatrixRight = None
+        self.graphicLimits = [-20,20]
 
         self.keypointsLeftAccumulated = []
         self.descriptorLeftAccumulated = []
@@ -54,6 +57,7 @@ class ImageServer(Node):
 
         self.tAccumulated = Point()
         self.rotAccumulated = R.from_matrix(np.matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])).as_quat()
+        self.tAccumulatedList = []
         
         # Calibration Data. Ex 4
         self.projectionMatrixLeft, self.intrisicsMatrixLeft, self.distortionCoeffLeft = self.extractCal(CAMERA_CALIBRATION_DATA_PATH+"left.yaml")
@@ -119,8 +123,8 @@ class ImageServer(Node):
         
         # RANSAC. Ex 10
         # Homography
-        esencialMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
-        self.transformLeftKPsInRightFrame(pointsLeft, esencialMatrix, rightImage)
+        homographyMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
+        self.transformLeftKPsInRightFrame(pointsLeft, homographyMatrix, rightImage)
 
         # DisparityMap. Ex 11
         disparityMap = self.stereo.compute(leftImage, rightImage)
@@ -132,6 +136,12 @@ class ImageServer(Node):
         self.reconstruct3d(np.array([leftImage.shape[1], leftImage.shape[0]]), disparityMap)
 
         # Pose estimation. Ex 13
+        esencialMatrix, _ = cv2.findEssentialMat(points1=pointsLeft,
+                                                 points2=pointsRight,
+                                                 cameraMatrix1=self.intrisicsMatrixLeft,
+                                                 distCoeffs1=self.distortionCoeffLeft,
+                                                 cameraMatrix2=self.intrisicsMatrixRight,
+                                                 distCoeffs2=self.distortionCoeffRight)
         self.monocularPose(esencialMatrix, leftImage, descriptorLeft, keypointsLeft)
         
         self.image_index = self.image_index + 1
@@ -268,6 +278,7 @@ class ImageServer(Node):
         self.tAccumulated.x += float(tLeft[0]) * TARA_DISTANCE
         self.tAccumulated.y += float(tLeft[1]) * TARA_DISTANCE
         self.tAccumulated.z += float(tLeft[2]) * TARA_DISTANCE
+        self.tAccumulatedList.append(self.tAccumulated)
 
         self.rotAccumulated *= R.from_matrix(rotLeft).as_quat()
 
@@ -283,7 +294,23 @@ class ImageServer(Node):
         leftPose.pose.orientation.w = self.rotAccumulated[3]
         self.cameraPoseLeft.publish(leftPose)
 
+        # Show trajectory
         self.get_logger().info('New position: ' + str(self.tAccumulated))
+        
+        # Graphic of Estimated Trajectory
+        fig = plt.figure()
+        ax = plt.axes()
+        ax.set_aspect("auto")
+        ax.set_xlim(self.graphicLimits)
+        ax.set_ylim(self.graphicLimits)
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.scatter([tA.x for tA in self.tAccumulatedList],
+                   [tA.y for tA in self.tAccumulatedList])
+        plt.title('Estimated Trajectory')
+        plt.savefig(f"/catkin_ws/src/result/Estimated Trajectory LeftCam/leftCamTraj_id_{self.image_index}.png")
+        plt.close()
+        
 
 
 def main(args=sys.argv):
