@@ -120,6 +120,7 @@ class ImageServer(Node):
         # RANSAC. Ex 10
         # Homography
         esencialMatrix, _ = cv2.findHomography(pointsLeft, pointsRight, cv2.RANSAC, ransacReprojThreshold=2.0)
+        self.transformLeftKPsInRightFrame(pointsLeft, esencialMatrix, rightImage)
 
         # DisparityMap. Ex 11
         disparityMap = self.stereo.compute(leftImage, rightImage)
@@ -135,6 +136,13 @@ class ImageServer(Node):
         
         self.image_index = self.image_index + 1
 
+    def transformLeftKPsInRightFrame(self, pointLeft, homography, right_frame):
+        rightKps = cv2.perspectiveTransform(pointLeft, homography).reshape(-1, 2)
+        frame_with_keypoint_transform = cv2.cvtColor(right_frame, cv2.COLOR_GRAY2RGB)
+        for kp in rightKps:
+            kp_pos = (round(kp[0]), round(kp[1]))
+            frame_with_keypoint_transform = cv2.circle(frame_with_keypoint_transform, kp_pos, 3, (0, 255, 0))
+        cv2.imwrite(os.path.join(RESULT_PATH, 'keypoints transform L->R', 'framekp' + '_id_' + str(self.image_index) + '.jpg'), frame_with_keypoint_transform)
 
     def saveSIFTFrameAndDrawKeypoints(self, siftFrame, image_raw, image_keypoint, camera_name):
         # Save SIFT Frame
